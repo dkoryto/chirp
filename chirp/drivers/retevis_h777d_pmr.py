@@ -31,8 +31,16 @@ struct {
     ul16 txtone;
     u8 unknown12;
     u8 unknown13;
-    u8 flags14;
-    u8 flags15;
+    u8 power_low:1,
+       hop_off:1,
+       scramble:1,
+       unknown14_3:5;
+    u8 pttid:2,
+       scan_add:1,
+       bcl:1,
+       unknown15_4:2,
+       wide:1,
+       unknown15_7:1;
 } memory[16];
 
 #seekto 0x0E20;
@@ -168,6 +176,9 @@ CTCSS_TONE_TO_RAW = {
 }
 CTCSS_RAW_TO_TONE = {raw: tone for tone, raw in CTCSS_TONE_TO_RAW.items()}
 
+# Note: Memory structure uses bitfields defined in MEM_FORMAT above.
+# The following constants are kept for reference but should not be used
+# for manual bitmasking - use the bitfield accessors instead.
 POWER_LOW_MASK = 0x01
 HOP_OFF_MASK = 0x02
 SCRAMBLE_MASK = 0x04
@@ -540,18 +551,15 @@ class RetevisH777D(chirp_common.CloneModeRadio):
                 mem.duplex = "split"
                 mem.offset = txfreq
 
-        flags14 = int(_mem.flags14)
-        flags15 = int(_mem.flags15)
-
-        mem.mode = "FM" if (flags15 & WIDE_MASK) else "NFM"
+        mem.mode = "FM" if _mem.wide else "NFM"
         # The radio does not store a per-channel tuning step, but CHIRP
         # still validates the hidden field on edit. Use the channel-plan
         # spacing so existing rows do not retain the default 5.0 kHz value.
         mem.tuning_step = 12.5
         mem.power = (self.POWER_LEVELS[0]
-                     if (flags14 & POWER_LOW_MASK)
+                     if _mem.power_low
                      else self.POWER_LEVELS[1])
-        mem.skip = "" if (flags15 & SCAN_ADD_MASK) else "S"
+        mem.skip = "" if _mem.scan_add else "S"
         mem.name = self._decode_name(_name)
 
         txtone = self._decode_tone(_mem.txtone)
@@ -564,28 +572,28 @@ class RetevisH777D(chirp_common.CloneModeRadio):
                 "pttid",
                 "PTT-ID",
                 RadioSettingValueList(PTTID_LIST,
-                                      current_index=flags15 & PTTID_MASK),
+                                      current_index=int(_mem.pttid)),
             )
         )
         mem.extra.append(
             RadioSetting(
                 "bcl",
                 "Busy Channel Lockout",
-                RadioSettingValueBoolean(bool(flags15 & BCL_MASK)),
+                RadioSettingValueBoolean(bool(_mem.bcl)),
             )
         )
         mem.extra.append(
             RadioSetting(
                 "scramble",
                 "Scramble",
-                RadioSettingValueBoolean(bool(flags14 & SCRAMBLE_MASK)),
+                RadioSettingValueBoolean(bool(_mem.scramble)),
             )
         )
         mem.extra.append(
             RadioSetting(
                 "hopping",
                 "Frequency Hopping",
-                RadioSettingValueBoolean(not bool(flags14 & HOP_OFF_MASK)),
+                RadioSettingValueBoolean(not bool(_mem.hop_off)),
             )
         )
 
@@ -1033,15 +1041,20 @@ class RetevisH777D(chirp_common.CloneModeRadio):
         self._encode_tone(_mem.txtone, *txtone)
         self._encode_tone(_mem.rxtone, *rxtone)
 
-        _mem.flags14 = 0
-        _mem.flags15 = 0
+        _mem.power_low = 0
+        _mem.hop_off = 0
+        _mem.scramble = 0
+        _mem.pttid = 0
+        _mem.scan_add = 0
+        _mem.bcl = 0
+        _mem.wide = 0
 
         if mem.power == self.POWER_LEVELS[0]:
-            _mem.flags14 |= POWER_LOW_MASK
+            _mem.power_low = 1
         if mem.mode == "FM":
-            _mem.flags15 |= WIDE_MASK
+            _mem.wide = 1
         if mem.skip != "S":
-            _mem.flags15 |= SCAN_ADD_MASK
+            _mem.scan_add = 1
 
         mem_name = (mem.name or "").encode(
             "ascii", errors="ignore")[:NAME_LENGTH]
@@ -1054,23 +1067,13 @@ class RetevisH777D(chirp_common.CloneModeRadio):
         for setting in mem.extra or []:
             name = setting.get_name()
             if name == "pttid":
-                _mem.flags15 &= ~PTTID_MASK
-                _mem.flags15 |= PTTID_LIST.index(str(setting.value))
+                _mem.pttid = PTTID_LIST.index(str(setting.value))
             elif name == "bcl":
-                if int(setting.value):
-                    _mem.flags15 |= BCL_MASK
-                else:
-                    _mem.flags15 &= ~BCL_MASK
+                _mem.bcl = 1 if int(setting.value) else 0
             elif name == "scramble":
-                if int(setting.value):
-                    _mem.flags14 |= SCRAMBLE_MASK
-                else:
-                    _mem.flags14 &= ~SCRAMBLE_MASK
+                _mem.scramble = 1 if int(setting.value) else 0
             elif name == "hopping":
-                if int(setting.value):
-                    _mem.flags14 &= ~HOP_OFF_MASK
-                else:
-                    _mem.flags14 |= HOP_OFF_MASK
+                _mem.hop_off = 0 if int(setting.value) else 1
 
     def set_settings(self, settings):
         _s226 = self._memobj.settings226
