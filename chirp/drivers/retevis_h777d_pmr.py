@@ -8,6 +8,13 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
+"""CHIRP driver for the Retevis H777D-PMR radio.
+
+This radio uses the Baofeng BF480 clone protocol for communication.
+It supports 16 PMR446 channels with optional names, various tones,
+and a wide range of settings exposed by the OEM software.
+"""
+
 import logging
 import struct
 
@@ -268,9 +275,9 @@ def _exit_programming_mode(serial):
 
 
 def _iter_blocks(ranges, block_size):
+    """Iterate over blocks in given ranges with specified block size."""
     for start, end in ranges:
-        for addr in range(start, end, block_size):
-            yield addr
+        yield from range(start, end, block_size)
 
 
 def _ranges_size(ranges):
@@ -322,6 +329,7 @@ def _write_block(radio, addr, data):
 
 
 def do_download(radio):
+    """Download memory from radio."""
     _enter_programming_mode(radio.pipe)
 
     status = chirp_common.Status()
@@ -346,6 +354,7 @@ def do_download(radio):
 
 
 def do_upload(radio):
+    """Upload memory to radio."""
     # The vendor CPS always writes a literal 0xFF at 0x1800.
     radio.pipe.timeout = 1
     _enter_programming_mode(radio.pipe)
@@ -443,10 +452,10 @@ class RetevisH777D(chirp_common.CloneModeRadio):
             self._mmap = do_download(self)
         except errors.RadioError:
             raise
-        except Exception:
+        except Exception as exc:
             LOG.exception("Unexpected error during download")
             raise errors.RadioError(
-                "Unexpected error communicating with radio")
+                "Unexpected error communicating with radio") from exc
         self.process_mmap()
 
     def sync_out(self):
@@ -454,10 +463,10 @@ class RetevisH777D(chirp_common.CloneModeRadio):
             do_upload(self)
         except errors.RadioError:
             raise
-        except Exception:
+        except Exception as exc:
             LOG.exception("Unexpected error during upload")
             raise errors.RadioError(
-                "Unexpected error communicating with radio")
+                "Unexpected error communicating with radio") from exc
 
     def get_raw_memory(self, number):
         return repr(self._memobj.memory[number - 1])
@@ -477,7 +486,7 @@ class RetevisH777D(chirp_common.CloneModeRadio):
         return value
 
     def _decode_tone(self, memval):
-        raw = int.from_bytes(memval.get_raw(), "little")
+        raw = int(memval)
 
         if raw in (0, 0xFFFF):
             return "", None, None
@@ -505,7 +514,7 @@ class RetevisH777D(chirp_common.CloneModeRadio):
         else:
             raise errors.RadioError(f"Unsupported tone mode: {mode}")
 
-        memval.set_raw(raw.to_bytes(2, "little"))
+        memval.set_value(raw)
 
     def _decode_name(self, name_entry):
         name = ""
@@ -1011,11 +1020,11 @@ class RetevisH777D(chirp_common.CloneModeRadio):
 
         return RadioSettings(basic, display, sidekeys, hidden)
 
-    def set_memory(self, mem):
-        _mem = self._memobj.memory[mem.number - 1]
-        _name = self._memobj.names[mem.number - 1]
+    def set_memory(self, memory):
+        _mem = self._memobj.memory[memory.number - 1]
+        _name = self._memobj.names[memory.number - 1]
 
-        if mem.empty:
+        if memory.empty:
             _mem.set_raw(b"\xFF" * (_mem.size() // 8))
             _name.set_raw(b"\xFF" * (_name.size() // 8))
             return
@@ -1023,21 +1032,21 @@ class RetevisH777D(chirp_common.CloneModeRadio):
         _mem.set_raw(b"\x00" * (_mem.size() // 8))
         _name.set_raw(b"\xFF" * (_name.size() // 8))
 
-        _mem.rxfreq = mem.freq / 10
+        _mem.rxfreq = memory.freq / 10
 
-        if mem.duplex == "off":
+        if memory.duplex == "off":
             for i in range(4):
                 _mem.txfreq[i].set_raw(b"\xFF")
-        elif mem.duplex == "split":
-            _mem.txfreq = mem.offset / 10
-        elif mem.duplex == "+":
-            _mem.txfreq = (mem.freq + mem.offset) / 10
-        elif mem.duplex == "-":
-            _mem.txfreq = (mem.freq - mem.offset) / 10
+        elif memory.duplex == "split":
+            _mem.txfreq = memory.offset / 10
+        elif memory.duplex == "+":
+            _mem.txfreq = (memory.freq + memory.offset) / 10
+        elif memory.duplex == "-":
+            _mem.txfreq = (memory.freq - memory.offset) / 10
         else:
-            _mem.txfreq = mem.freq / 10
+            _mem.txfreq = memory.freq / 10
 
-        txtone, rxtone = chirp_common.split_tone_encode(mem)
+        txtone, rxtone = chirp_common.split_tone_encode(memory)
         self._encode_tone(_mem.txtone, *txtone)
         self._encode_tone(_mem.rxtone, *rxtone)
 
@@ -1049,14 +1058,14 @@ class RetevisH777D(chirp_common.CloneModeRadio):
         _mem.bcl = 0
         _mem.wide = 0
 
-        if mem.power == self.POWER_LEVELS[0]:
+        if memory.power == self.POWER_LEVELS[0]:
             _mem.power_low = 1
-        if mem.mode == "FM":
+        if memory.mode == "FM":
             _mem.wide = 1
-        if mem.skip != "S":
+        if memory.skip != "S":
             _mem.scan_add = 1
 
-        mem_name = (mem.name or "").encode(
+        mem_name = (memory.name or "").encode(
             "ascii", errors="ignore")[:NAME_LENGTH]
         for i in range(NAME_LENGTH):
             try:
@@ -1064,7 +1073,7 @@ class RetevisH777D(chirp_common.CloneModeRadio):
             except IndexError:
                 _name.name[i] = "\xFF"
 
-        for setting in mem.extra or []:
+        for setting in memory.extra or []:
             name = setting.get_name()
             if name == "pttid":
                 _mem.pttid = PTTID_LIST.index(str(setting.value))
